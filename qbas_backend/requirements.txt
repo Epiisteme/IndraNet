@@ -1,0 +1,144 @@
+# ==========================================
+
+# QBAS Backend Requirements
+
+# Production-tested dependency set
+
+# Python 3.12
+
+# ==========================================
+
+# ------------------------------------------
+
+# FastAPI Web Stack
+
+# ------------------------------------------
+
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+
+# ------------------------------------------
+
+# Configuration & Validation
+
+# ------------------------------------------
+
+pydantic==2.11.5
+pydantic-settings==2.9.1
+
+# ------------------------------------------
+
+# Security & Authentication
+
+# ------------------------------------------
+
+python-jose[cryptography]==3.5.0
+cryptography==45.0.4
+
+# ------------------------------------------
+
+# Database Layer
+
+# ------------------------------------------
+
+sqlalchemy==2.0.41
+psycopg[binary]==3.2.9
+alembic==1.16.2
+
+# ------------------------------------------
+
+# Scientific Computing
+
+#
+
+# IMPORTANT:
+
+# PennyLane and SciPy currently have
+
+# compatibility issues with NumPy 2.x
+
+# in many Windows environments.
+
+# Pin NumPy to 1.26.x.
+
+# ------------------------------------------
+
+numpy==1.26.4
+scipy==1.13.1
+
+# ------------------------------------------
+
+# Machine Learning
+
+# ------------------------------------------
+
+scikit-learn==1.5.2
+
+# ------------------------------------------
+
+# PyTorch
+
+# CPU build
+
+#
+
+# For CUDA builds install separately:
+
+# pip install torch torchvision
+
+# from official PyTorch index.
+
+# ------------------------------------------
+
+torch==2.7.1
+torchvision==0.22.1
+
+# ------------------------------------------
+
+# Computer Vision
+
+# ------------------------------------------
+
+opencv-python-headless==4.10.0.84
+
+# ------------------------------------------
+
+# Quantum Computing
+
+# ------------------------------------------
+
+autoray==0.6.11
+pennylane==0.40.0
+# ------------------------------------------
+
+# Homomorphic Encryption
+
+# ------------------------------------------
+
+tenseal==0.3.16
+
+# ------------------------------------------
+
+# Testing
+
+# ------------------------------------------
+
+pytest==8.4.0
+pytest-asyncio==1.0.0
+httpx==0.28.1
+hypothesis==6.135.4
+
+# ------------------------------------------
+
+# Optional Utilities
+
+# Uncomment if required
+
+# ------------------------------------------
+
+# python-dotenv==1.1.0
+
+# rich==14.0.0
+
+# loguru==0.7.3
