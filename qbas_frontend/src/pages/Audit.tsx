@@ -52,7 +52,9 @@ export function Audit() {
           <h2>Recent security events</h2>
         </div>
         {error ? (
-          <div className="result-badge danger">{error}</div>
+          <div className="result-badge danger" role="alert">
+            {error}
+          </div>
         ) : events.length ? (
           <div className="audit-list">
             {events.map((event) => (

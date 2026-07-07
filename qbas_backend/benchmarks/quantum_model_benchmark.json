@@ -1,0 +1,110 @@
+{
+  "benchmark_note": "Deterministic synthetic amplitude benchmark using actual local IndraNet quantum code paths; not a real biometric accuracy claim.",
+  "config": {
+    "seed": 41,
+    "n_qubits": 3,
+    "identities": 3,
+    "max_train_per_identity": 6,
+    "test_per_identity": 10,
+    "amplitude_noise": 0.1,
+    "qsvm_reps": 1,
+    "token_tolerance_bits": 4
+  },
+  "elapsed_ms": 3957.6334170415066,
+  "final_test_time_accuracy": {
+    "train_per_identity": 6,
+    "total_train_samples": 18,
+    "qsvm_accuracy": 0.9666666666666667,
+    "qft_cosine_accuracy": 1.0,
+    "qrng_token_accuracy": 1.0
+  },
+  "latency_ms_per_test_sample": {
+    "qft_extract": 0.4193436907371506,
+    "qsvm_predict": 20.005670832082007,
+    "qft_cosine_predict": 0.004873599391430616,
+    "qrng_token_predict": 0.526436100093027
+  },
+  "ckks": {
+    "ckks_status": "ok",
+    "ckks_setup_ms": 84.7133329953067,
+    "ckks_encrypt_two_vectors_ms": 3.7229160079732537,
+    "ckks_score_decrypt_ms": 2.8657909715548158,
+    "ckks_plaintext_dot": 0.9986185931245993,
+    "ckks_encrypted_dot": 0.9986199675193808,
+    "ckks_abs_error": 1.374394781428201e-06,
+    "qft_extract_ms_per_sample": 0.4193436907371506
+  },
+  "curve": [
+    {
+      "train_per_identity": 1,
+      "total_train_samples": 3,
+      "qsvm_accuracy": 0.8333333333333334,
+      "qsvm_train_ms": 13.267665985040367,
+      "qsvm_predict_ms_per_sample": 3.5723708337172866,
+      "qft_cosine_accuracy": 1.0,
+      "qft_cosine_predict_ms_per_sample": 0.004856967522452275,
+      "qrng_token_accuracy": 0.9333333333333333,
+      "qrng_token_predict_ms_per_sample": 0.11803613160736859
+    },
+    {
+      "train_per_identity": 2,
+      "total_train_samples": 6,
+      "qsvm_accuracy": 0.9,
+      "qsvm_train_ms": 42.60250000515953,
+      "qsvm_predict_ms_per_sample": 7.061072200303897,
+      "qft_cosine_accuracy": 1.0,
+      "qft_cosine_predict_ms_per_sample": 0.004605531770115097,
+      "qrng_token_accuracy": 0.9333333333333333,
+      "qrng_token_predict_ms_per_sample": 0.20581250040171048
+    },
+    {
+      "train_per_identity": 3,
+      "total_train_samples": 9,
+      "qsvm_accuracy": 0.9,
+      "qsvm_train_ms": 157.16916701057926,
+      "qsvm_predict_ms_per_sample": 11.399215265798071,
+      "qft_cosine_accuracy": 1.0,
+      "qft_cosine_predict_ms_per_sample": 0.004573599047337969,
+      "qrng_token_accuracy": 0.9333333333333333,
+      "qrng_token_predict_ms_per_sample": 0.28417363452414673
+    },
+    {
+      "train_per_identity": 4,
+      "total_train_samples": 12,
+      "qsvm_accuracy": 0.9,
+      "qsvm_train_ms": 312.7988330088556,
+      "qsvm_predict_ms_per_sample": 22.742809700624395,
+      "qft_cosine_accuracy": 1.0,
+      "qft_cosine_predict_ms_per_sample": 0.004655567075436314,
+      "qrng_token_accuracy": 0.9333333333333333,
+      "qrng_token_predict_ms_per_sample": 0.4054346994962543
+    },
+    {
+      "train_per_identity": 5,
+      "total_train_samples": 15,
+      "qsvm_accuracy": 0.9,
+      "qsvm_train_ms": 350.57445795973763,
+      "qsvm_predict_ms_per_sample": 18.239297232745837,
+      "qft_cosine_accuracy": 1.0,
+      "qft_cosine_predict_ms_per_sample": 0.0046402662216375274,
+      "qrng_token_accuracy": 1.0,
+      "qrng_token_predict_ms_per_sample": 0.451400000990058
+    },
+    {
+      "train_per_identity": 6,
+      "total_train_samples": 18,
+      "qsvm_accuracy": 0.9666666666666667,
+      "qsvm_train_ms": 367.45950003387406,
+      "qsvm_predict_ms_per_sample": 20.005670832082007,
+      "qft_cosine_accuracy": 1.0,
+      "qft_cosine_predict_ms_per_sample": 0.004873599391430616,
+      "qrng_token_accuracy": 1.0,
+      "qrng_token_predict_ms_per_sample": 0.526436100093027
+    }
+  ],
+  "artifacts": {
+    "csv": "benchmarks/quantum_model_accuracy.csv",
+    "json": "benchmarks/quantum_model_benchmark.json",
+    "svg": "benchmarks/quantum_model_convergence.svg"
+  }
+}

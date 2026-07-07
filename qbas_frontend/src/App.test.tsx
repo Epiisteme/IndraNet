@@ -16,7 +16,14 @@ vi.mock("./api/qbasClient", async (importOriginal) => {
   };
 });
 
-const renderApp = (path = "/") => render(<MemoryRouter initialEntries={[path]}><App /></MemoryRouter>);
+const routerFuture = { v7_relativeSplatPath: true, v7_startTransition: true };
+
+const renderApp = (path = "/") =>
+  render(
+    <MemoryRouter initialEntries={[path]} future={routerFuture}>
+      <App />
+    </MemoryRouter>
+  );
 
 describe("operator console", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -28,8 +35,9 @@ describe("operator console", () => {
     expect(screen.queryByRole("note")).toBeNull();
   });
 
-  it("navigates through the workflow", () => {
+  it("navigates through the workflow", async () => {
     renderApp();
+    expect(await screen.findByText("Demo", { selector: ".environment-badge" })).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: /enroll identity/i }));
     expect(screen.getByRole("heading", { name: "Enroll identity" })).toBeTruthy();
   });
@@ -41,7 +49,11 @@ describe("operator console", () => {
   });
 
   it("validates verification inputs", () => {
-    render(<MemoryRouter><AuthPanel onVector={vi.fn()} onComplete={vi.fn()} /></MemoryRouter>);
+    render(
+      <MemoryRouter future={routerFuture}>
+        <AuthPanel onVector={vi.fn()} onComplete={vi.fn()} />
+      </MemoryRouter>
+    );
     fireEvent.click(screen.getByRole("button", { name: /verify identity/i }));
     expect(screen.getByRole("alert").textContent).toMatch(/identity being verified/i);
   });
@@ -57,8 +69,9 @@ describe("operator console", () => {
     expect(await screen.findByText(/no audit events yet/i)).toBeTruthy();
   });
 
-  it("renders explainability without crashing", () => {
+  it("renders explainability without crashing", async () => {
     renderApp("/explainability");
+    expect(await screen.findByText("Demo", { selector: ".environment-badge" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: /how verification decisions work/i })).toBeTruthy();
     expect(screen.getByText(/secondary proof check/i)).toBeTruthy();
   });
