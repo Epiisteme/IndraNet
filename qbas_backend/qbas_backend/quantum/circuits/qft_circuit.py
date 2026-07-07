@@ -1,10 +1,11 @@
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pennylane as qml
 
 
-def build_qft_circuit(device: qml.Device, n_qubits: int) -> Callable[[np.ndarray], list[float]]:
+def build_qft_circuit(device: Any, n_qubits: int) -> Callable[[np.ndarray], list[float]]:
     @qml.qnode(device)
     def qft_circuit(amplitudes: np.ndarray) -> list[float]:
         qml.AmplitudeEmbedding(

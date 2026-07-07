@@ -146,7 +146,6 @@ def _error_code(status_code: int) -> str:
         404: "NOT_FOUND",
         413: "UPLOAD_TOO_LARGE",
         415: "UNSUPPORTED_MEDIA_TYPE",
-        422: "VALIDATION_ERROR",
         429: "RATE_LIMITED",
         503: "SERVICE_UNAVAILABLE",
     }.get(status_code, "REQUEST_FAILED")

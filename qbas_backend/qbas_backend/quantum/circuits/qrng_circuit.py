@@ -1,9 +1,10 @@
 from collections.abc import Callable
+from typing import Any
 
 import pennylane as qml
 
 
-def build_qrng_sampler(device: qml.Device, n_qubits: int) -> Callable[[], object]:
+def build_qrng_sampler(device: Any, n_qubits: int) -> Callable[[], object]:
     @qml.qnode(device)
     def sampler() -> object:
         for wire in range(n_qubits):

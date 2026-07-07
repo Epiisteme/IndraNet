@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 
 from sqlalchemy import (
@@ -17,6 +18,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import make_url
 
 
 def utc_now_iso() -> str:
@@ -78,7 +80,17 @@ class IdentityStore:
     def __init__(self, database_url: str):
         if "://" not in database_url:
             database_url = f"sqlite:///{database_url}"
+        self._ensure_sqlite_parent(database_url)
         self.engine: Engine = create_engine(database_url, pool_pre_ping=True)
+
+    @staticmethod
+    def _ensure_sqlite_parent(database_url: str) -> None:
+        url = make_url(database_url)
+        if not url.drivername.startswith("sqlite"):
+            return
+        if not url.database or url.database == ":memory:":
+            return
+        Path(url.database).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
     def init(self) -> None:
         metadata.create_all(self.engine)
