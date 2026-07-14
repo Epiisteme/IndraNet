@@ -13,6 +13,10 @@ export interface EnrollResult {
   qbt_token: string;
   qrng_entropy: number;
   feature_dim: number;
+  left_feature_dim?: number | null;
+  right_feature_dim?: number | null;
+  fused_feature_dim?: number | null;
+  fusion_strategy?: string | null;
   enrolled_at: string;
 }
 
@@ -22,6 +26,11 @@ export interface AuthResult {
   confidence: number;
   reason: string;
   latency_ms?: number;
+  left_confidence?: number | null;
+  right_confidence?: number | null;
+  fused_confidence?: number | null;
+  score_fusion_confidence?: number | null;
+  fusion_strategy?: string | null;
   threshold: number;
   decision_code: string;
 }
@@ -79,9 +88,10 @@ export const issueToken = async (role: "admin" | "operator" = "admin"): Promise<
   return data.access_token;
 };
 
-export const enrollIris = async (imageBlob: Blob, userId: string): Promise<EnrollResult> => {
+export const enrollIris = async (leftBlob: Blob, rightBlob: Blob, userId: string): Promise<EnrollResult> => {
   const form = new FormData();
-  form.append("file", imageBlob, "iris.jpg");
+  form.append("left_file", leftBlob, "left-iris.jpg");
+  form.append("right_file", rightBlob, "right-iris.jpg");
   form.append("user_id", userId);
   const { data } = await createQBASClient().post<EnrollResult>("/enroll", form);
   return data;
@@ -95,12 +105,14 @@ export const extractFeatures = async (imageBlob: Blob): Promise<FeatureVector> =
 };
 
 export const authenticateIris = async (
-  imageBlob: Blob,
+  leftBlob: Blob,
+  rightBlob: Blob,
   token?: string,
   userId?: string
 ): Promise<AuthResult> => {
   const form = new FormData();
-  form.append("file", imageBlob, "iris.jpg");
+  form.append("left_file", leftBlob, "left-iris.jpg");
+  form.append("right_file", rightBlob, "right-iris.jpg");
   if (userId) form.append("user_id", userId);
   const { data } = await createQBASClient(token).post<AuthResult>("/authenticate", form);
   return data;

@@ -17,14 +17,16 @@ interface EnrollFormProps {
 
 export function EnrollForm({ onVector, onComplete }: EnrollFormProps) {
   const [userId, setUserId] = useState("");
-  const [blob, setBlob] = useState<Blob>();
+  const [leftBlob, setLeftBlob] = useState<Blob>();
+  const [rightBlob, setRightBlob] = useState<Blob>();
   const [result, setResult] = useState<EnrollResult>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [validation, setValidation] = useState<string>();
 
-  const capture = async (nextBlob: Blob) => {
-    setBlob(nextBlob);
+  const capture = async (eye: "left" | "right", nextBlob: Blob) => {
+    if (eye === "left") setLeftBlob(nextBlob);
+    else setRightBlob(nextBlob);
     setResult(undefined);
     setError(undefined);
     setLoading(true);
@@ -32,7 +34,8 @@ export function EnrollForm({ onVector, onComplete }: EnrollFormProps) {
     try {
       onVector(await extractFeatures(nextBlob));
     } catch (err) {
-      setBlob(undefined);
+      if (eye === "left") setLeftBlob(undefined);
+      else setRightBlob(undefined);
       setError(getApiErrorMessage(err));
     } finally {
       setLoading(false);
@@ -44,8 +47,8 @@ export function EnrollForm({ onVector, onComplete }: EnrollFormProps) {
       setValidation("Enter an identity reference before enrollment.");
       return;
     }
-    if (!blob) {
-      setValidation("Capture or upload an approved image before enrollment.");
+    if (!leftBlob || !rightBlob) {
+      setValidation("Capture or upload approved left and right eye images before enrollment.");
       return;
     }
 
@@ -54,7 +57,7 @@ export function EnrollForm({ onVector, onComplete }: EnrollFormProps) {
     setError(undefined);
 
     try {
-      const enrolled = await enrollIris(blob, userId.trim());
+      const enrolled = await enrollIris(leftBlob, rightBlob, userId.trim());
       setResult(enrolled);
       onComplete();
     } catch (err) {
@@ -74,7 +77,10 @@ export function EnrollForm({ onVector, onComplete }: EnrollFormProps) {
         </div>
       </div>
 
-      <IrisCapture onCapture={capture} disabled={loading} />
+      <div className="dual-capture-grid">
+        <IrisCapture label="Left eye iris" onCapture={(nextBlob) => capture("left", nextBlob)} disabled={loading} />
+        <IrisCapture label="Right eye iris" onCapture={(nextBlob) => capture("right", nextBlob)} disabled={loading} />
+      </div>
 
       <label className="field-label">
         Identity reference
@@ -102,8 +108,9 @@ export function EnrollForm({ onVector, onComplete }: EnrollFormProps) {
           <details>
             <summary>Advanced / Technical Details</summary>
             <p>
-              {result.feature_dim} derived features; {result.qrng_entropy} bits of generated entropy. Raw iris imagery is
-              not returned by the API.
+              {result.left_feature_dim ?? "-"} left-eye features; {result.right_feature_dim ?? "-"} right-eye features;{" "}
+              {result.fused_feature_dim ?? result.feature_dim} fused features; {result.qrng_entropy} bits of generated
+              entropy. Raw iris imagery is not returned by the API.
             </p>
           </details>
         </div>

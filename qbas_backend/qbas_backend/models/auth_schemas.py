@@ -6,6 +6,11 @@ class AuthResult(BaseModel):
     identity: str | None
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str
+    left_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    right_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    fused_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    score_fusion_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    fusion_strategy: str | None = None
     latency_ms: float | None = None
     threshold: float = Field(ge=0.0, le=1.0)
     decision_code: str

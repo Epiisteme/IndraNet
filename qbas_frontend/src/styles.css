@@ -208,6 +208,21 @@ h2 {
   gap: 12px;
 }
 
+.dual-capture-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.capture-title {
+  margin: 0;
+  color: #22332e;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
 .camera-frame {
   position: relative;
   width: 100%;
@@ -348,6 +363,30 @@ h2 {
   background: #fff1f0;
   color: var(--danger);
 }
+
+.confidence-breakdown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.confidence-breakdown div {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(120, 138, 132, 0.25);
+  border-radius: 8px;
+}
+
+.confidence-breakdown dt,
+.confidence-breakdown dd {
+  margin: 0;
+  font-size: 12px;
+}
+
+.confidence-breakdown dd { font-weight: 800; }
 
 .result-tail {
   color: var(--success);
@@ -583,6 +622,7 @@ details p { margin: 6px 0 0; line-height: 1.5; }
   .content-page { padding: 18px 14px; }
   .page-header { flex-direction: column; }
   .form-row { flex-direction: column; align-items: stretch; }
+  .dual-capture-grid { grid-template-columns: 1fr; }
   .explain-grid { grid-template-columns: 1fr; }
   .audit-card { grid-template-columns: 1fr; gap: 6px; }
   .audit-card time { text-align: left; }

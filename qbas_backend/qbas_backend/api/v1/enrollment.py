@@ -1,6 +1,8 @@
 import json
+from dataclasses import dataclass
 from typing import Annotated
 
+import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 
 from qbas_backend.models.iris_schemas import EnrollResult, FeatureVector
@@ -9,6 +11,75 @@ from qbas_backend.services.classifier_service import refresh_classifier
 from qbas_backend.storage.identity_store import EnrollmentRecord, utc_now_iso
 
 router = APIRouter(tags=["Enrollment"])
+
+
+@dataclass(frozen=True)
+class EyeFeatureSet:
+    fused_features: np.ndarray
+    latency_ms: float
+    fusion_strategy: str
+    left_features: np.ndarray | None = None
+    right_features: np.ndarray | None = None
+    left_latency_ms: float | None = None
+    right_latency_ms: float | None = None
+
+    @property
+    def left_feature_dim(self) -> int | None:
+        return None if self.left_features is None else int(self.left_features.size)
+
+    @property
+    def right_feature_dim(self) -> int | None:
+        return None if self.right_features is None else int(self.right_features.size)
+
+    @property
+    def fused_feature_dim(self) -> int:
+        return int(self.fused_features.size)
+
+
+def _as_feature_vector(features: np.ndarray) -> np.ndarray:
+    return np.asarray(features, dtype=np.float64).reshape(-1)
+
+
+def _encrypt_feature_vector(request: Request, features: np.ndarray) -> str:
+    return request.app.state.feature_cipher.encrypt_json(json.dumps(_as_feature_vector(features).tolist()))
+
+
+async def _extract_eye_features(
+    request: Request,
+    file: UploadFile | None,
+    left_file: UploadFile | None,
+    right_file: UploadFile | None,
+) -> EyeFeatureSet:
+    if left_file is not None or right_file is not None:
+        if left_file is None or right_file is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Upload both left_file and right_file for dual-eye enrollment or authentication",
+            )
+        left_result = await _extract_qft_features(request, left_file)
+        right_result = await _extract_qft_features(request, right_file)
+        left_features = _as_feature_vector(left_result.features)
+        right_features = _as_feature_vector(right_result.features)
+        return EyeFeatureSet(
+            fused_features=np.concatenate([left_features, right_features]),
+            left_features=left_features,
+            right_features=right_features,
+            latency_ms=float(left_result.latency_ms + right_result.latency_ms),
+            left_latency_ms=left_result.latency_ms,
+            right_latency_ms=right_result.latency_ms,
+            fusion_strategy="feature_concat_and_score_average",
+        )
+    if file is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Upload either file or both left_file and right_file",
+        )
+    result = await _extract_qft_features(request, file)
+    return EyeFeatureSet(
+        fused_features=_as_feature_vector(result.features),
+        latency_ms=result.latency_ms,
+        fusion_strategy="single_eye_legacy",
+    )
 
 
 async def _extract_qft_features(request: Request, file: UploadFile):
@@ -56,24 +127,42 @@ async def extract_iris_features(request: Request, file: UploadFile = File(...)) 
 async def enroll_iris(
     request: Request,
     user_id: Annotated[str, Form(min_length=1, max_length=128)],
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    left_file: UploadFile | None = File(default=None),
+    right_file: UploadFile | None = File(default=None),
 ) -> EnrollResult:
     normalized_user_id = user_id.strip()
     if not normalized_user_id:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="User ID cannot be blank")
-    result = await _extract_qft_features(request, file)
-    token_payload = request.app.state.binder.enroll(result.features)
+    eye_features = await _extract_eye_features(request, file, left_file, right_file)
+    token_payload = request.app.state.binder.enroll(eye_features.fused_features)
     qbt_token = request.app.state.binder.encode_token(token_payload)
-    feature_ciphertext = request.app.state.feature_cipher.encrypt_json(json.dumps(result.features.tolist()))
+    fused_ciphertext = _encrypt_feature_vector(request, eye_features.fused_features)
+    left_ciphertext = (
+        _encrypt_feature_vector(request, eye_features.left_features)
+        if eye_features.left_features is not None
+        else None
+    )
+    right_ciphertext = (
+        _encrypt_feature_vector(request, eye_features.right_features)
+        if eye_features.right_features is not None
+        else None
+    )
     enrolled_at = utc_now_iso()
     record = EnrollmentRecord(
         user_id=normalized_user_id,
         qbt_token_json=qbt_token,
-        feature_ciphertext=feature_ciphertext,
-        feature_dim=len(result.features),
+        feature_ciphertext=fused_ciphertext,
+        feature_dim=eye_features.fused_feature_dim,
         qbt_salt=token_payload.salt,
         qbt_commitment=token_payload.commitment,
         created_at=enrolled_at,
+        left_iris_feature_ciphertext=left_ciphertext,
+        right_iris_feature_ciphertext=right_ciphertext,
+        fused_iris_feature_ciphertext=fused_ciphertext,
+        left_iris_feature_dim=eye_features.left_feature_dim,
+        right_iris_feature_dim=eye_features.right_feature_dim,
+        fused_iris_feature_dim=eye_features.fused_feature_dim,
     )
     request.app.state.store.upsert_enrollment(record)
     refresh_classifier(request.app)
@@ -82,14 +171,18 @@ async def enroll_iris(
         user_id=record.user_id,
         authenticated=True,
         confidence=1.0,
-        latency_ms=result.latency_ms,
+        latency_ms=eye_features.latency_ms,
         reason="Enrollment completed",
     )
     return EnrollResult(
         user_id=record.user_id,
         qbt_token=qbt_token,
         qrng_entropy=256,
-        feature_dim=len(result.features),
+        feature_dim=eye_features.fused_feature_dim,
+        left_feature_dim=eye_features.left_feature_dim,
+        right_feature_dim=eye_features.right_feature_dim,
+        fused_feature_dim=eye_features.fused_feature_dim,
+        fusion_strategy=eye_features.fusion_strategy,
         enrolled_at=enrolled_at,
     )
 

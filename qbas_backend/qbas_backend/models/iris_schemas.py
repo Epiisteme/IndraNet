@@ -15,6 +15,10 @@ class EnrollResult(BaseModel):
     qbt_token: str
     qrng_entropy: int
     feature_dim: int
+    left_feature_dim: int | None = None
+    right_feature_dim: int | None = None
+    fused_feature_dim: int | None = None
+    fusion_strategy: str | None = None
     enrolled_at: str
 
 

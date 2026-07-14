@@ -20,14 +20,16 @@ interface AuthPanelProps {
 export function AuthPanel({ onVector, onComplete }: AuthPanelProps) {
   const { ensureToken } = useAuth();
   const [userId, setUserId] = useState("");
-  const [blob, setBlob] = useState<Blob>();
+  const [leftBlob, setLeftBlob] = useState<Blob>();
+  const [rightBlob, setRightBlob] = useState<Blob>();
   const [result, setResult] = useState<AuthResult>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [validation, setValidation] = useState<string>();
 
-  const capture = async (nextBlob: Blob) => {
-    setBlob(nextBlob);
+  const capture = async (eye: "left" | "right", nextBlob: Blob) => {
+    if (eye === "left") setLeftBlob(nextBlob);
+    else setRightBlob(nextBlob);
     setResult(undefined);
     setError(undefined);
     setLoading(true);
@@ -35,7 +37,8 @@ export function AuthPanel({ onVector, onComplete }: AuthPanelProps) {
     try {
       onVector(await extractFeatures(nextBlob));
     } catch (err) {
-      setBlob(undefined);
+      if (eye === "left") setLeftBlob(undefined);
+      else setRightBlob(undefined);
       setError(getApiErrorMessage(err));
     } finally {
       setLoading(false);
@@ -47,8 +50,8 @@ export function AuthPanel({ onVector, onComplete }: AuthPanelProps) {
       setValidation("Enter the identity being verified.");
       return;
     }
-    if (!blob) {
-      setValidation("Capture or upload an approved image before verification.");
+    if (!leftBlob || !rightBlob) {
+      setValidation("Capture or upload approved left and right eye images before verification.");
       return;
     }
 
@@ -57,7 +60,7 @@ export function AuthPanel({ onVector, onComplete }: AuthPanelProps) {
     setError(undefined);
 
     try {
-      const nextResult = await authenticateIris(blob, await ensureToken(), userId.trim());
+      const nextResult = await authenticateIris(leftBlob, rightBlob, await ensureToken(), userId.trim());
       setResult(nextResult);
       onComplete();
     } catch (err) {
@@ -77,7 +80,10 @@ export function AuthPanel({ onVector, onComplete }: AuthPanelProps) {
         </div>
       </div>
 
-      <IrisCapture onCapture={capture} disabled={loading} />
+      <div className="dual-capture-grid">
+        <IrisCapture label="Left eye iris" onCapture={(nextBlob) => capture("left", nextBlob)} disabled={loading} />
+        <IrisCapture label="Right eye iris" onCapture={(nextBlob) => capture("right", nextBlob)} disabled={loading} />
+      </div>
 
       <label className="field-label">
         Claimed identity

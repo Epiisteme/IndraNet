@@ -18,10 +18,16 @@ class Extraction:
 
 class Pipeline:
     def extract_from_bytes(self, contents: bytes) -> Extraction:
+        if contents == b"left":
+            return Extraction(np.array([0.2, -0.1], dtype=np.float64))
+        if contents == b"right":
+            return Extraction(np.array([-0.1, 0.2], dtype=np.float64))
         if contents == b"invalid":
             raise ValueError("Image could not be decoded")
         if contents == b"different":
             return Extraction(np.array([-0.2, 0.1], dtype=np.float64))
+        if contents == b"different-right":
+            return Extraction(np.array([0.1, -0.2], dtype=np.float64))
         return Extraction(np.array([0.2, -0.1], dtype=np.float64))
 
 
@@ -29,7 +35,8 @@ class Binder:
     verification_result = True
 
     def enroll(self, features):
-        return TokenPayload(salt="salt", commitment="commitment", feature_dim=2, tolerance_bits=2)
+        feature_dim = int(np.asarray(features, dtype=np.float64).reshape(-1).size)
+        return TokenPayload(salt="salt", commitment="commitment", feature_dim=feature_dim, tolerance_bits=2)
 
     def encode_token(self, payload):
         return "protected-token"
@@ -69,9 +76,17 @@ def make_client(tmp_path, monkeypatch):
     app.state.qsvm = Classifier()
     app.state.qrng = QRNG()
     app.state.ckks_ctx = None
+
     app.state.ckks_error = "disabled"
     monkeypatch.setattr("qbas_backend.api.v1.enrollment.refresh_classifier", lambda app: None)
     return TestClient(app), store
+
+
+def dual_image_files(left=b"left", right=b"right", content_type="image/jpeg"):
+    return {
+        "left_file": ("left-iris.jpg", left, content_type),
+        "right_file": ("right-iris.jpg", right, content_type),
+    }
 
 
 def image_file(contents=b"image", content_type="image/jpeg"):
@@ -94,6 +109,33 @@ def test_enrollment_success_creates_audit_event(tmp_path, monkeypatch):
     assert response.json()["user_id"] == "alice"
     assert store.get_enrollment("alice") is not None
     assert store.list_audit()[0].event_type == "enroll"
+    store.close()
+
+
+def test_dual_eye_enrollment_and_verification_report_fused_confidence(tmp_path, monkeypatch):
+    client, store = make_client(tmp_path, monkeypatch)
+    enrolled = client.post("/api/v1/enroll", data={"user_id": "alice"}, files=dual_image_files())
+    assert enrolled.status_code == 200
+    enrolled_body = enrolled.json()
+    assert enrolled_body["left_feature_dim"] == 2
+    assert enrolled_body["right_feature_dim"] == 2
+    assert enrolled_body["fused_feature_dim"] == 4
+
+    record = store.get_enrollment("alice")
+    assert record is not None
+    assert record.left_iris_feature_ciphertext is not None
+    assert record.right_iris_feature_ciphertext is not None
+    assert record.fused_iris_feature_dim == 4
+
+    response = client.post("/api/v1/authenticate", data={"user_id": "alice"}, files=dual_image_files())
+    body = response.json()
+    assert response.status_code == 200
+    assert body["authenticated"] is True
+    assert body["left_confidence"] == 1.0
+    assert body["right_confidence"] == 1.0
+    assert body["score_fusion_confidence"] == 1.0
+    assert body["fused_confidence"] == 1.0
+    assert body["fusion_strategy"] == "feature_concat_and_score_average"
     store.close()
 
 
@@ -173,6 +215,8 @@ def test_verification_rejects_dissimilar_stored_features(tmp_path, monkeypatch):
         record.__class__(
             **{
                 **record.__dict__,
+                "fused_iris_feature_ciphertext": client.app.state.feature_cipher.encrypt_json("[0.1, 0.2]"),
+                "fused_iris_feature_dim": 2,
                 "feature_ciphertext": client.app.state.feature_cipher.encrypt_json("[0.1, 0.2]"),
             }
         )

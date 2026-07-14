@@ -7,7 +7,7 @@ from typing import Annotated
 import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 
-from qbas_backend.api.v1.enrollment import _extract_qft_features
+from qbas_backend.api.v1.enrollment import _as_feature_vector, _extract_eye_features
 from qbas_backend.models.auth_schemas import AuthResult, TokenResponse
 from qbas_backend.models.iris_schemas import EncryptedAuthRequest, EncryptedAuthResult
 from qbas_backend.security import create_access_token, require_api_key, require_jwt
@@ -45,11 +45,14 @@ async def issue_token(
 )
 async def authenticate_iris(
     request: Request,
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
+    left_file: UploadFile | None = File(default=None),
+    right_file: UploadFile | None = File(default=None),
     user_id: Annotated[str | None, Form(max_length=128)] = None,
 ) -> AuthResult:
     started = time.perf_counter()
-    extraction = await _extract_qft_features(request, file)
+    eye_features = await _extract_eye_features(request, file, left_file, right_file)
+    probe_features = eye_features.fused_features
 
     if user_id:
         claimed_user_id = user_id.strip()
@@ -59,22 +62,42 @@ async def authenticate_iris(
                 request, started, False, None, 0.0, "Claimed identity is not enrolled", "NOT_ENROLLED"
             )
 
-        plaintext = request.app.state.feature_cipher.decrypt_json(record.feature_ciphertext)
-        enrolled_features = np.asarray(json.loads(plaintext), dtype=np.float64).reshape(-1)
-        probe_features = np.asarray(extraction.features, dtype=np.float64).reshape(-1)
+        enrolled_features = _decrypt_feature_vector(
+            request, record.fused_iris_feature_ciphertext or record.feature_ciphertext
+        )
         confidence = _cosine_confidence(enrolled_features, probe_features)
-        token_ok = request.app.state.binder.verify(extraction.features, record.qbt_token_json)
+        left_confidence = right_confidence = score_fusion_confidence = None
+        fused_confidence = confidence
         biometric_ok = confidence >= request.app.state.settings.auth_threshold
+        if eye_features.left_features is not None and eye_features.right_features is not None:
+            if record.left_iris_feature_ciphertext and record.right_iris_feature_ciphertext:
+                left_enrolled = _decrypt_feature_vector(request, record.left_iris_feature_ciphertext)
+                right_enrolled = _decrypt_feature_vector(request, record.right_iris_feature_ciphertext)
+                left_confidence = _cosine_confidence(left_enrolled, eye_features.left_features)
+                right_confidence = _cosine_confidence(right_enrolled, eye_features.right_features)
+                score_fusion_confidence = (left_confidence + right_confidence) / 2.0
+                confidence = (fused_confidence + score_fusion_confidence) / 2.0
+                biometric_ok = (
+                    confidence >= request.app.state.settings.auth_threshold
+                    and fused_confidence >= request.app.state.settings.auth_threshold
+                    and left_confidence >= request.app.state.settings.auth_threshold
+                    and right_confidence >= request.app.state.settings.auth_threshold
+                )
+            else:
+                confidence = 0.0
+                fused_confidence = 0.0
+                biometric_ok = False
+        token_ok = request.app.state.binder.verify(probe_features, record.qbt_token_json)
         authenticated = biometric_ok and token_ok
-        _log_token_diagnostics(enrolled_features, probe_features, record.qbt_token_json, extraction.features, token_ok)
+        _log_token_diagnostics(enrolled_features, probe_features, record.qbt_token_json, probe_features, token_ok)
         if authenticated:
-            reason = "Stored biometric features and secondary token proof matched the claimed identity"
+            reason = "Stored iris templates and secondary token proof matched the claimed identity"
             decision_code = "MATCH"
         elif biometric_ok and not token_ok:
-            reason = "Stored biometric features matched; secondary token proof disagreed"
+            reason = "Stored iris templates matched; secondary token proof disagreed"
             decision_code = "TOKEN_PROOF_MISMATCH"
         else:
-            reason = "Feature similarity did not meet the verification threshold"
+            reason = "One or more iris similarity scores did not meet the verification threshold"
             decision_code = "BELOW_THRESHOLD"
         return _finalize_auth(
             request,
@@ -84,9 +107,14 @@ async def authenticate_iris(
             confidence,
             reason,
             decision_code,
+            left_confidence=left_confidence,
+            right_confidence=right_confidence,
+            fused_confidence=fused_confidence,
+            score_fusion_confidence=score_fusion_confidence,
+            fusion_strategy=eye_features.fusion_strategy,
         )
 
-    prediction = request.app.state.qsvm.predict(extraction.features.reshape(1, -1))
+    prediction = request.app.state.qsvm.predict(probe_features.reshape(1, -1))
     identity = str(prediction["identity"][0])
     confidence = float(prediction["confidence"][0])
     authenticated = identity != "unknown" and confidence >= request.app.state.settings.auth_threshold
@@ -100,7 +128,15 @@ async def authenticate_iris(
             reason = "No enrolled templates are available for comparison"
             decision_code = "NO_TEMPLATES"
     return _finalize_auth(
-        request, started, authenticated, identity if authenticated else None, confidence, reason, decision_code
+        request,
+        started,
+        authenticated,
+        identity if authenticated else None,
+        confidence,
+        reason,
+        decision_code,
+        fused_confidence=confidence,
+        fusion_strategy=eye_features.fusion_strategy,
     )
 
 
@@ -114,6 +150,11 @@ def _cosine_confidence(enrolled_features: np.ndarray, probe_features: np.ndarray
     if not np.isfinite(similarity):
         return 0.0
     return max(0.0, min(1.0, (similarity + 1.0) / 2.0))
+
+
+def _decrypt_feature_vector(request: Request, ciphertext: str) -> np.ndarray:
+    plaintext = request.app.state.feature_cipher.decrypt_json(ciphertext)
+    return _as_feature_vector(np.asarray(json.loads(plaintext), dtype=np.float64))
 
 
 def _checksum_bytes(data: bytes) -> str:
@@ -178,6 +219,11 @@ def _finalize_auth(
     confidence: float,
     reason: str,
     decision_code: str,
+    left_confidence: float | None = None,
+    right_confidence: float | None = None,
+    fused_confidence: float | None = None,
+    score_fusion_confidence: float | None = None,
+    fusion_strategy: str | None = None,
 ) -> AuthResult:
     latency_ms = (time.perf_counter() - started) * 1000.0
     request.app.state.store.append_audit(
@@ -191,9 +237,20 @@ def _finalize_auth(
     return AuthResult(
         authenticated=authenticated,
         identity=identity,
-        confidence=max(0.0, min(1.0, confidence)),
+        confidence=_clamp_confidence(confidence) or 0.0,
+        left_confidence=_clamp_confidence(left_confidence),
+        right_confidence=_clamp_confidence(right_confidence),
+        fused_confidence=_clamp_confidence(fused_confidence),
+        score_fusion_confidence=_clamp_confidence(score_fusion_confidence),
+        fusion_strategy=fusion_strategy,
         reason=reason,
         latency_ms=latency_ms,
         threshold=request.app.state.settings.auth_threshold,
         decision_code=decision_code,
     )
+
+
+def _clamp_confidence(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(0.0, min(1.0, value))

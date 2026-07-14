@@ -47,13 +47,26 @@ class BenchmarkConfig:
 class CurvePoint:
     train_per_identity: int
     total_train_samples: int
+    qsvm_train_accuracy: float
     qsvm_accuracy: float
     qsvm_train_ms: float
     qsvm_predict_ms_per_sample: float
+    qft_cosine_train_accuracy: float
     qft_cosine_accuracy: float
     qft_cosine_predict_ms_per_sample: float
+    qrng_token_train_accuracy: float
     qrng_token_accuracy: float
     qrng_token_predict_ms_per_sample: float
+    dual_qsvm_train_accuracy: float
+    dual_qsvm_accuracy: float
+    dual_qsvm_train_ms: float
+    dual_qsvm_predict_ms_per_sample: float
+    dual_score_fusion_train_accuracy: float
+    dual_score_fusion_accuracy: float
+    dual_score_fusion_predict_ms_per_sample: float
+    dual_qrng_token_train_accuracy: float
+    dual_qrng_token_accuracy: float
+    dual_qrng_token_predict_ms_per_sample: float
 
 
 def normalize(vector: np.ndarray) -> np.ndarray:
@@ -122,6 +135,58 @@ def synthesize_dataset(config: BenchmarkConfig, extractor: QFTIrisExtractor) -> 
     )
 
 
+def synthesize_dual_eye_dataset(
+    config: BenchmarkConfig,
+    extractor: QFTIrisExtractor,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    rng = np.random.default_rng(config.seed + 17)
+    left_centers = select_amplitude_centers(extractor, rng, config.identities)
+    right_centers = select_amplitude_centers(extractor, rng, config.identities)
+    train_left: list[np.ndarray] = []
+    train_right: list[np.ndarray] = []
+    train_fused: list[np.ndarray] = []
+    train_labels: list[str] = []
+    test_left: list[np.ndarray] = []
+    test_right: list[np.ndarray] = []
+    test_fused: list[np.ndarray] = []
+    test_labels: list[str] = []
+    extraction_latencies: list[float] = []
+
+    for class_idx, (left_center, right_center) in enumerate(zip(left_centers, right_centers, strict=True)):
+        label = f"identity_{class_idx + 1}"
+        sample_count = config.max_train_per_identity + config.test_per_identity
+        for sample_idx in range(sample_count):
+            left_amplitudes = normalize(left_center + rng.normal(scale=config.amplitude_noise, size=left_center.shape))
+            right_amplitudes = normalize(right_center + rng.normal(scale=config.amplitude_noise, size=right_center.shape))
+            start = time.perf_counter()
+            left_features = extractor.extract(left_amplitudes)
+            right_features = extractor.extract(right_amplitudes)
+            extraction_latencies.append((time.perf_counter() - start) * 1000.0)
+            fused_features = np.concatenate([left_features, right_features])
+            if sample_idx < config.max_train_per_identity:
+                train_left.append(left_features)
+                train_right.append(right_features)
+                train_fused.append(fused_features)
+                train_labels.append(label)
+            else:
+                test_left.append(left_features)
+                test_right.append(right_features)
+                test_fused.append(fused_features)
+                test_labels.append(label)
+
+    return (
+        np.asarray(train_left, dtype=np.float64),
+        np.asarray(train_right, dtype=np.float64),
+        np.asarray(train_fused, dtype=np.float64),
+        np.asarray(train_labels),
+        np.asarray(test_left, dtype=np.float64),
+        np.asarray(test_right, dtype=np.float64),
+        np.asarray(test_fused, dtype=np.float64),
+        np.asarray(test_labels),
+        mean(extraction_latencies),
+    )
+
+
 def accuracy(predicted: Iterable[str], expected: np.ndarray) -> float:
     predicted_array = np.asarray(list(predicted))
     return float(np.mean(predicted_array == expected))
@@ -139,6 +204,31 @@ def qft_cosine_predict(train_x: np.ndarray, train_y: np.ndarray, test_x: np.ndar
         sample_norm = normalize(sample)
         similarities = centroid_matrix @ sample_norm
         predictions.append(labels[int(np.argmax(similarities))])
+    return predictions
+
+
+def qft_score_fusion_predict(
+    train_left: np.ndarray,
+    train_right: np.ndarray,
+    train_y: np.ndarray,
+    test_left: np.ndarray,
+    test_right: np.ndarray,
+) -> list[str]:
+    labels = sorted(set(train_y.tolist()))
+    left_centroids = []
+    right_centroids = []
+    for label in labels:
+        left_centroids.append(normalize(train_left[train_y == label].mean(axis=0)))
+        right_centroids.append(normalize(train_right[train_y == label].mean(axis=0)))
+    left_matrix = np.asarray(left_centroids)
+    right_matrix = np.asarray(right_centroids)
+
+    predictions = []
+    for left_sample, right_sample in zip(test_left, test_right, strict=True):
+        left_scores = left_matrix @ normalize(left_sample)
+        right_scores = right_matrix @ normalize(right_sample)
+        fused_scores = (left_scores + right_scores) / 2.0
+        predictions.append(labels[int(np.argmax(fused_scores))])
     return predictions
 
 
@@ -169,52 +259,127 @@ def benchmark_curve(config: BenchmarkConfig) -> tuple[list[CurvePoint], dict[str
     extractor = QFTIrisExtractor(n_qubits=config.n_qubits)
     extractor.warmup()
     train_x, train_y, test_x, test_y, qft_extract_ms = synthesize_dataset(config, extractor)
+    (
+        dual_train_left,
+        dual_train_right,
+        dual_train_fused,
+        dual_train_y,
+        dual_test_left,
+        dual_test_right,
+        dual_test_fused,
+        dual_test_y,
+        dual_qft_extract_ms,
+    ) = synthesize_dual_eye_dataset(config, extractor)
     binder = BiometricTokenBinder(QuantumRNG(n_qubits=max(4, config.n_qubits)), config.token_tolerance_bits)
 
     points: list[CurvePoint] = []
     for train_per_identity in range(1, config.max_train_per_identity + 1):
-        subset_mask = np.concatenate(
-            [
-                np.where(train_y == label)[0][:train_per_identity]
-                for label in sorted(set(train_y.tolist()))
-            ]
+        labels = sorted(set(train_y.tolist()))
+        subset_mask = np.concatenate([np.where(train_y == label)[0][:train_per_identity] for label in labels])
+        dual_subset_mask = np.concatenate(
+            [np.where(dual_train_y == label)[0][:train_per_identity] for label in labels]
         )
         subset_x = train_x[subset_mask]
         subset_y = train_y[subset_mask]
+        dual_subset_left = dual_train_left[dual_subset_mask]
+        dual_subset_right = dual_train_right[dual_subset_mask]
+        dual_subset_fused = dual_train_fused[dual_subset_mask]
+        dual_subset_y = dual_train_y[dual_subset_mask]
 
         qsvm = QuantumSVMClassifier(n_qubits=config.n_qubits, reps=config.qsvm_reps)
         start = time.perf_counter()
         qsvm.fit(subset_x, subset_y)
         qsvm_train_ms = (time.perf_counter() - start) * 1000.0
 
+        qsvm_train_predictions = qsvm.predict(subset_x)["identity"]
         start = time.perf_counter()
         qsvm_predictions = qsvm.predict(test_x)["identity"]
         qsvm_predict_ms = ((time.perf_counter() - start) * 1000.0) / len(test_x)
 
+        cosine_train_predictions = qft_cosine_predict(subset_x, subset_y, subset_x)
         start = time.perf_counter()
         cosine_predictions = qft_cosine_predict(subset_x, subset_y, test_x)
         cosine_predict_ms = ((time.perf_counter() - start) * 1000.0) / len(test_x)
 
+        token_train_predictions = qrng_token_predict(binder, subset_x, subset_y, subset_x, train_per_identity)
         start = time.perf_counter()
         token_predictions = qrng_token_predict(binder, subset_x, subset_y, test_x, train_per_identity)
         token_predict_ms = ((time.perf_counter() - start) * 1000.0) / len(test_x)
+
+        dual_qsvm = QuantumSVMClassifier(n_qubits=dual_subset_fused.shape[1], reps=config.qsvm_reps)
+        start = time.perf_counter()
+        dual_qsvm.fit(dual_subset_fused, dual_subset_y)
+        dual_qsvm_train_ms = (time.perf_counter() - start) * 1000.0
+
+        dual_qsvm_train_predictions = dual_qsvm.predict(dual_subset_fused)["identity"]
+        start = time.perf_counter()
+        dual_qsvm_predictions = dual_qsvm.predict(dual_test_fused)["identity"]
+        dual_qsvm_predict_ms = ((time.perf_counter() - start) * 1000.0) / len(dual_test_fused)
+
+        dual_score_train_predictions = qft_score_fusion_predict(
+            dual_subset_left,
+            dual_subset_right,
+            dual_subset_y,
+            dual_subset_left,
+            dual_subset_right,
+        )
+        start = time.perf_counter()
+        dual_score_predictions = qft_score_fusion_predict(
+            dual_subset_left,
+            dual_subset_right,
+            dual_subset_y,
+            dual_test_left,
+            dual_test_right,
+        )
+        dual_score_predict_ms = ((time.perf_counter() - start) * 1000.0) / len(dual_test_fused)
+
+        dual_token_train_predictions = qrng_token_predict(
+            binder,
+            dual_subset_fused,
+            dual_subset_y,
+            dual_subset_fused,
+            train_per_identity,
+        )
+        start = time.perf_counter()
+        dual_token_predictions = qrng_token_predict(
+            binder,
+            dual_subset_fused,
+            dual_subset_y,
+            dual_test_fused,
+            train_per_identity,
+        )
+        dual_token_predict_ms = ((time.perf_counter() - start) * 1000.0) / len(dual_test_fused)
 
         points.append(
             CurvePoint(
                 train_per_identity=train_per_identity,
                 total_train_samples=len(subset_x),
+                qsvm_train_accuracy=accuracy(qsvm_train_predictions, subset_y),
                 qsvm_accuracy=accuracy(qsvm_predictions, test_y),
                 qsvm_train_ms=qsvm_train_ms,
                 qsvm_predict_ms_per_sample=qsvm_predict_ms,
+                qft_cosine_train_accuracy=accuracy(cosine_train_predictions, subset_y),
                 qft_cosine_accuracy=accuracy(cosine_predictions, test_y),
                 qft_cosine_predict_ms_per_sample=cosine_predict_ms,
+                qrng_token_train_accuracy=accuracy(token_train_predictions, subset_y),
                 qrng_token_accuracy=accuracy(token_predictions, test_y),
                 qrng_token_predict_ms_per_sample=token_predict_ms,
+                dual_qsvm_train_accuracy=accuracy(dual_qsvm_train_predictions, dual_subset_y),
+                dual_qsvm_accuracy=accuracy(dual_qsvm_predictions, dual_test_y),
+                dual_qsvm_train_ms=dual_qsvm_train_ms,
+                dual_qsvm_predict_ms_per_sample=dual_qsvm_predict_ms,
+                dual_score_fusion_train_accuracy=accuracy(dual_score_train_predictions, dual_subset_y),
+                dual_score_fusion_accuracy=accuracy(dual_score_predictions, dual_test_y),
+                dual_score_fusion_predict_ms_per_sample=dual_score_predict_ms,
+                dual_qrng_token_train_accuracy=accuracy(dual_token_train_predictions, dual_subset_y),
+                dual_qrng_token_accuracy=accuracy(dual_token_predictions, dual_test_y),
+                dual_qrng_token_predict_ms_per_sample=dual_token_predict_ms,
             )
         )
 
     ckks_metrics = benchmark_ckks(test_x)
     ckks_metrics["qft_extract_ms_per_sample"] = qft_extract_ms
+    ckks_metrics["dual_qft_extract_ms_per_sample"] = dual_qft_extract_ms
     return points, ckks_metrics
 
 
@@ -257,7 +422,7 @@ def benchmark_ckks(test_x: np.ndarray) -> dict[str, float | str | None]:
 
 def write_csv(path: Path, points: list[CurvePoint]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(asdict(points[0]).keys()))
+        writer = csv.DictWriter(handle, fieldnames=list(asdict(points[0]).keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(asdict(point) for point in points)
 
@@ -285,9 +450,12 @@ def write_svg(path: Path, points: list[CurvePoint]) -> None:
         return top + (1.0 - value) * plot_h
 
     series = {
-        "QSVM": ("#0f766e", [(sx(p.total_train_samples), sy(p.qsvm_accuracy)) for p in points]),
-        "QFT cosine": ("#2563eb", [(sx(p.total_train_samples), sy(p.qft_cosine_accuracy)) for p in points]),
-        "QRNG token proof": ("#b45309", [(sx(p.total_train_samples), sy(p.qrng_token_accuracy)) for p in points]),
+        "Single-eye QSVM": ("#0f766e", [(sx(p.total_train_samples), sy(p.qsvm_accuracy)) for p in points]),
+        "Single-eye QFT cosine": ("#2563eb", [(sx(p.total_train_samples), sy(p.qft_cosine_accuracy)) for p in points]),
+        "Single-eye QRNG token": ("#b45309", [(sx(p.total_train_samples), sy(p.qrng_token_accuracy)) for p in points]),
+        "Dual-eye QSVM": ("#7c3aed", [(sx(p.total_train_samples), sy(p.dual_qsvm_accuracy)) for p in points]),
+        "Dual-eye score fusion": ("#dc2626", [(sx(p.total_train_samples), sy(p.dual_score_fusion_accuracy)) for p in points]),
+        "Dual-eye QRNG token": ("#0891b2", [(sx(p.total_train_samples), sy(p.dual_qrng_token_accuracy)) for p in points]),
     }
     grid = []
     for idx in range(6):
@@ -302,9 +470,9 @@ def write_svg(path: Path, points: list[CurvePoint]) -> None:
 
     legend = []
     for idx, (name, (color, _coords)) in enumerate(series.items()):
-        y = top + 18 + idx * 24
-        legend.append(f'<line x1="{width-220}" y1="{y}" x2="{width-184}" y2="{y}" stroke="{color}" stroke-width="3" />')
-        legend.append(f'<text x="{width-174}" y="{y+4}" font-size="13">{name}</text>')
+        y = top + 16 + idx * 21
+        legend.append(f'<line x1="{width-246}" y1="{y}" x2="{width-210}" y2="{y}" stroke="{color}" stroke-width="3" />')
+        legend.append(f'<text x="{width-200}" y="{y+4}" font-size="12">{name}</text>')
 
     polylines = [svg_polyline(coords, color) for color, coords in series.values()]
     dots = []
@@ -369,18 +537,35 @@ def main() -> None:
         ),
         "config": asdict(config),
         "elapsed_ms": elapsed_ms,
+        "final_training_accuracy": {
+            "train_per_identity": final_point.train_per_identity,
+            "total_train_samples": final_point.total_train_samples,
+            "qsvm_accuracy": final_point.qsvm_train_accuracy,
+            "qft_cosine_accuracy": final_point.qft_cosine_train_accuracy,
+            "qrng_token_accuracy": final_point.qrng_token_train_accuracy,
+            "dual_qsvm_accuracy": final_point.dual_qsvm_train_accuracy,
+            "dual_score_fusion_accuracy": final_point.dual_score_fusion_train_accuracy,
+            "dual_qrng_token_accuracy": final_point.dual_qrng_token_train_accuracy,
+        },
         "final_test_time_accuracy": {
             "train_per_identity": final_point.train_per_identity,
             "total_train_samples": final_point.total_train_samples,
             "qsvm_accuracy": final_point.qsvm_accuracy,
             "qft_cosine_accuracy": final_point.qft_cosine_accuracy,
             "qrng_token_accuracy": final_point.qrng_token_accuracy,
+            "dual_qsvm_accuracy": final_point.dual_qsvm_accuracy,
+            "dual_score_fusion_accuracy": final_point.dual_score_fusion_accuracy,
+            "dual_qrng_token_accuracy": final_point.dual_qrng_token_accuracy,
         },
         "latency_ms_per_test_sample": {
             "qft_extract": ckks_metrics.get("qft_extract_ms_per_sample"),
             "qsvm_predict": final_point.qsvm_predict_ms_per_sample,
             "qft_cosine_predict": final_point.qft_cosine_predict_ms_per_sample,
             "qrng_token_predict": final_point.qrng_token_predict_ms_per_sample,
+            "dual_qft_extract": ckks_metrics.get("dual_qft_extract_ms_per_sample"),
+            "dual_qsvm_predict": final_point.dual_qsvm_predict_ms_per_sample,
+            "dual_score_fusion_predict": final_point.dual_score_fusion_predict_ms_per_sample,
+            "dual_qrng_token_predict": final_point.dual_qrng_token_predict_ms_per_sample,
         },
         "ckks": ckks_metrics,
         "curve": [asdict(point) for point in points],
@@ -391,6 +576,7 @@ def main() -> None:
         },
     }
     json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps(report["final_training_accuracy"], indent=2))
     print(json.dumps(report["final_test_time_accuracy"], indent=2))
     print(f"Wrote {csv_path}")
     print(f"Wrote {json_path}")

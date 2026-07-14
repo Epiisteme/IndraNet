@@ -7,6 +7,7 @@ import { useCamera } from "../hooks/useCamera";
 interface IrisCaptureProps {
   onCapture: (imageBlob: Blob) => void;
   disabled?: boolean;
+  label?: string;
 }
 
 const videoConstraints: MediaTrackConstraints = {
@@ -15,7 +16,7 @@ const videoConstraints: MediaTrackConstraints = {
   facingMode: "user",
 };
 
-export function IrisCapture({ onCapture, disabled }: IrisCaptureProps) {
+export function IrisCapture({ onCapture, disabled, label = "Iris sample" }: IrisCaptureProps) {
   const { webcamRef, capture, lastCaptureUrl } = useCamera();
 
   const handleCameraCapture = async () => {
@@ -34,6 +35,7 @@ export function IrisCapture({ onCapture, disabled }: IrisCaptureProps) {
 
   return (
     <div className="capture-shell">
+      <h3 className="capture-title">{label}</h3>
       <div className="camera-frame">
         <Webcam
           ref={webcamRef}

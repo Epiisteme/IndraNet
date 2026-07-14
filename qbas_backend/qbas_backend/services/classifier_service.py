@@ -13,7 +13,8 @@ def load_training_set(app: "FastAPI") -> tuple[np.ndarray, np.ndarray]:
     features: list[list[float]] = []
     labels: list[str] = []
     for record in records:
-        plaintext = app.state.feature_cipher.decrypt_json(record.feature_ciphertext)
+        ciphertext = record.fused_iris_feature_ciphertext or record.feature_ciphertext
+        plaintext = app.state.feature_cipher.decrypt_json(ciphertext)
         features.append(json.loads(plaintext))
         labels.append(record.user_id)
     if not features:
@@ -22,13 +23,13 @@ def load_training_set(app: "FastAPI") -> tuple[np.ndarray, np.ndarray]:
 
 def refresh_classifier(app: "FastAPI") -> QuantumSVMClassifier:
     settings = app.state.settings
+    X, y = load_training_set(app)
     classifier = QuantumSVMClassifier(
-        n_qubits=settings.n_qubits,
+        n_qubits=int(X.shape[1]) if len(X) > 0 else settings.n_qubits,
         C=settings.qsvm_c,
         device=settings.quantum_device,
         reps=settings.qsvm_reps,
     )
-    X, y = load_training_set(app)
     if len(X) > 0:
         classifier.fit(X, y)
     app.state.qsvm = classifier

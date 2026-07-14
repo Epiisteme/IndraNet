@@ -26,6 +26,7 @@ export function ResultBadge({ result, error }: ResultBadgeProps) {
 
   const Icon = result.authenticated ? ShieldCheck : ShieldX;
   const publicMessage = result.authenticated ? "Biometric match and token proof both passed." : "Verification not approved.";
+  const formatConfidence = (value?: number | null) => (value == null ? "-" : `${(value * 100).toFixed(1)}%`);
 
   return (
     <div className={`result-badge ${result.authenticated ? "success" : "warning"}`} role="status">
@@ -39,6 +40,15 @@ export function ResultBadge({ result, error }: ResultBadgeProps) {
         <details>
           <summary>Advanced / Technical Details</summary>
           <p>{result.reason}</p>
+          <dl className="confidence-breakdown">
+            <div><dt>Left eye</dt><dd>{formatConfidence(result.left_confidence)}</dd></div>
+            <div><dt>Right eye</dt><dd>{formatConfidence(result.right_confidence)}</dd></div>
+            <div><dt>Score fusion</dt><dd>{formatConfidence(result.score_fusion_confidence)}</dd></div>
+            <div><dt>Feature fusion</dt><dd>{formatConfidence(result.fused_confidence)}</dd></div>
+          </dl>
+          {result.fusion_strategy ? (
+            <p>Fusion strategy: {result.fusion_strategy.replace(/_/g, " ")}.</p>
+          ) : null}
           <p>
             Decision {result.decision_code}; threshold {(result.threshold * 100).toFixed(0)}%; processing{" "}
             {result.latency_ms?.toFixed(0) ?? "-"} ms.

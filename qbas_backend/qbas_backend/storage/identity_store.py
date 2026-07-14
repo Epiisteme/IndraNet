@@ -14,7 +14,9 @@ from sqlalchemy import (
     Text,
     create_engine,
     insert,
+    inspect,
     select,
+    text,
     update,
 )
 from sqlalchemy.engine import Engine
@@ -33,6 +35,12 @@ enrollments = Table(
     Column("qbt_token_json", Text, nullable=False),
     Column("feature_ciphertext", Text, nullable=False),
     Column("feature_dim", Integer, nullable=False),
+    Column("left_iris_feature_ciphertext", Text),
+    Column("right_iris_feature_ciphertext", Text),
+    Column("fused_iris_feature_ciphertext", Text),
+    Column("left_iris_feature_dim", Integer),
+    Column("right_iris_feature_dim", Integer),
+    Column("fused_iris_feature_dim", Integer),
     Column("qbt_salt", Text, nullable=False),
     Column("qbt_commitment", Text, nullable=False),
     Column("created_at", String(64), nullable=False),
@@ -61,6 +69,12 @@ class EnrollmentRecord:
     qbt_salt: str
     qbt_commitment: str
     created_at: str
+    left_iris_feature_ciphertext: str | None = None
+    right_iris_feature_ciphertext: str | None = None
+    fused_iris_feature_ciphertext: str | None = None
+    left_iris_feature_dim: int | None = None
+    right_iris_feature_dim: int | None = None
+    fused_iris_feature_dim: int | None = None
     revoked_at: str | None = None
 
 
@@ -94,6 +108,26 @@ class IdentityStore:
 
     def init(self) -> None:
         metadata.create_all(self.engine)
+        self._ensure_dual_eye_columns()
+
+    def _ensure_dual_eye_columns(self) -> None:
+        url = make_url(str(self.engine.url))
+        if not url.drivername.startswith("sqlite"):
+            return
+        inspector = inspect(self.engine)
+        existing = {column["name"] for column in inspector.get_columns("enrollments")}
+        optional_columns = {
+            "left_iris_feature_ciphertext": "TEXT",
+            "right_iris_feature_ciphertext": "TEXT",
+            "fused_iris_feature_ciphertext": "TEXT",
+            "left_iris_feature_dim": "INTEGER",
+            "right_iris_feature_dim": "INTEGER",
+            "fused_iris_feature_dim": "INTEGER",
+        }
+        with self.engine.begin() as connection:
+            for column_name, column_type in optional_columns.items():
+                if column_name not in existing:
+                    connection.execute(text(f"ALTER TABLE enrollments ADD COLUMN {column_name} {column_type}"))
 
     def check_connection(self) -> bool:
         try:
