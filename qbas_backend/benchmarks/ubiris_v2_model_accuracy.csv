@@ -1,0 +1,4 @@
+model,train_accuracy,test_accuracy,train_samples,test_samples,identities,fit_ms,predict_ms_per_sample
+QSVM,0.7166666666666667,0.125,60,40,10,9420.12666699884,156.77845209993393
+QFT cosine,0.4,0.15,60,40,10,0.0,0.004373749980004504
+QRNG token proof,0.1,0.025,60,40,10,0.0,1.2824608300434193

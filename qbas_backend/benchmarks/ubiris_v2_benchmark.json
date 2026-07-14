@@ -1,0 +1,66 @@
+{
+  "benchmark_note": "UBIRIS.v2 evaluation using actual local IndraNet preprocessing, QFT, QSVM, and QRNG code paths.",
+  "dataset_root": "/tmp/ubirisv2_1000",
+  "config": {
+    "identity_regex": "_C(?P<id>[0-9]+)_S[0-9]+_I[0-9]+",
+    "train_per_identity": 6,
+    "test_per_identity": 4,
+    "max_identities": 10,
+    "seed": 41,
+    "n_qubits": 4,
+    "qsvm_reps": 2,
+    "token_tolerance_bits": 4
+  },
+  "stats": {
+    "total_images": 1000,
+    "total_identities": 100,
+    "eligible_identities": 100,
+    "selected_identities": 10
+  },
+  "extracted": {
+    "train_samples": 60,
+    "test_samples": 40,
+    "train_extraction_ms_mean": 2.482700099911502,
+    "test_extraction_ms_mean": 2.101512549779727,
+    "train_failures": [],
+    "test_failures": [],
+    "train_failure_count": 0,
+    "test_failure_count": 0
+  },
+  "accuracy": [
+    {
+      "model": "QSVM",
+      "train_accuracy": 0.7166666666666667,
+      "test_accuracy": 0.125,
+      "train_samples": 60,
+      "test_samples": 40,
+      "identities": 10,
+      "fit_ms": 9420.12666699884,
+      "predict_ms_per_sample": 156.77845209993393
+    },
+    {
+      "model": "QFT cosine",
+      "train_accuracy": 0.4,
+      "test_accuracy": 0.15,
+      "train_samples": 60,
+      "test_samples": 40,
+      "identities": 10,
+      "fit_ms": 0.0,
+      "predict_ms_per_sample": 0.004373749980004504
+    },
+    {
+      "model": "QRNG token proof",
+      "train_accuracy": 0.1,
+      "test_accuracy": 0.025,
+      "train_samples": 60,
+      "test_samples": 40,
+      "identities": 10,
+      "fit_ms": 0.0,
+      "predict_ms_per_sample": 1.2824608300434193
+    }
+  ],
+  "artifacts": {
+    "csv": "benchmarks/ubiris_v2_model_accuracy.csv",
+    "json": "benchmarks/ubiris_v2_benchmark.json"
+  }
+}
