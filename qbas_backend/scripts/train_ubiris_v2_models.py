@@ -18,13 +18,14 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import pickle
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import mean
-from typing import Iterable
 
 import numpy as np
 
@@ -69,8 +70,61 @@ class TrainedArtifacts:
     manifest_json: str
 
 
+@dataclass(frozen=True)
+class LearningCurveRow:
+    model: str
+    train_fraction: float
+    train_percent: float
+    train_samples: int
+    test_samples: int
+    identities: int
+    train_accuracy: float
+    test_accuracy: float
+    fit_ms: float
+    train_predict_ms_per_sample: float
+    test_predict_ms_per_sample: float
+    kernel_evaluations: int
+    artifact: str
+
+
 def log(message: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def format_duration(seconds: float | int | None) -> str:
+    if seconds is None or not math.isfinite(float(seconds)):
+        return "unknown"
+    seconds = float(seconds)
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, remaining = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {int(remaining)}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h {int(minutes)}m {int(remaining)}s"
+
+
+def make_qsvm_progress_logger(label: str) -> Callable[[dict[str, float | int | str | None]], None]:
+    def callback(event: dict[str, float | int | str | None]) -> None:
+        phase = str(event.get("phase", "kernel"))
+        status = str(event.get("event", "progress"))
+        completed = event.get("completed")
+        total = event.get("total")
+        elapsed_s = float(event.get("elapsed_s") or 0.0)
+        rate = event.get("rate_per_s")
+        eta_s = event.get("eta_s")
+        if isinstance(completed, int) and isinstance(total, int) and total > 0:
+            percent = (completed / total) * 100.0
+            rate_text = f"{float(rate):.1f}/s" if rate is not None else "unknown"
+            log(
+                f"{label} {phase} {status}: {completed}/{total} kernel evals "
+                f"({percent:.1f}%) elapsed={format_duration(elapsed_s)} "
+                f"rate={rate_text} eta={format_duration(float(eta_s) if eta_s is not None else None)}"
+            )
+            return
+        log(f"{label} {phase} {status}: elapsed={format_duration(elapsed_s)}")
+
+    return callback
 
 
 def grouped_by_identity(samples: list[ImageSample]) -> dict[str, list[ImageSample]]:
@@ -267,15 +321,343 @@ def qrng_token_predict_from_enrollment(
     return predictions
 
 
-def write_accuracy_csv(path: Path, rows: list[AccuracyRow]) -> None:
+def write_dataclass_csv(path: Path, rows: list[AccuracyRow] | list[LearningCurveRow]) -> None:
+    if not rows:
+        return
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(asdict(rows[0]).keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerows(asdict(row) for row in rows)
 
 
+def write_accuracy_csv(path: Path, rows: list[AccuracyRow]) -> None:
+    write_dataclass_csv(path, rows)
+
+
 def estimate_qsvm_kernel_evaluations(train_count: int, test_count: int) -> int:
-    return train_count * train_count + train_count * train_count + test_count * train_count
+    return sum(estimate_qsvm_phase_kernel_evaluations(train_count, test_count).values())
+
+
+def estimate_qsvm_phase_kernel_evaluations(train_count: int, test_count: int) -> dict[str, int]:
+    return {
+        "fit": train_count * train_count,
+        "train_predict": train_count * train_count,
+        "test_predict": test_count * train_count,
+    }
+
+
+def parse_learning_curve_fractions(value: str) -> list[float]:
+    fractions: list[float] = []
+    for raw in value.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        fraction = float(token)
+        if fraction <= 0.0 or fraction > 1.0:
+            raise ValueError("Learning-curve fractions must be in the interval (0, 1]")
+        fractions.append(fraction)
+    return sorted(set(fractions))
+
+
+def learning_curve_tag(fraction: float) -> str:
+    return f"{int(round(fraction * 100)):03d}pct"
+
+
+def select_learning_curve_indices(train_y: np.ndarray, fraction: float, seed: int) -> np.ndarray:
+    if fraction >= 1.0:
+        return np.arange(len(train_y), dtype=int)
+    rng = np.random.default_rng(seed)
+    labels = sorted(set(train_y.tolist()))
+    selected: set[int] = set()
+    for label in labels:
+        label_indices = np.flatnonzero(train_y == label)
+        if len(label_indices) > 0:
+            selected.add(int(rng.choice(label_indices)))
+    target = max(len(selected), int(round(len(train_y) * fraction)))
+    remaining = np.asarray([index for index in range(len(train_y)) if index not in selected], dtype=int)
+    if len(remaining) > 0 and len(selected) < target:
+        take = min(target - len(selected), len(remaining))
+        selected.update(int(index) for index in rng.choice(remaining, size=take, replace=False))
+    return np.asarray(sorted(selected), dtype=int)
+
+
+def curve_row_from_accuracy(
+    row: AccuracyRow,
+    *,
+    fraction: float,
+    train_predict_ms_per_sample: float,
+    kernel_evaluations: int,
+    artifact: Path | str,
+) -> LearningCurveRow:
+    return LearningCurveRow(
+        model=row.model,
+        train_fraction=fraction,
+        train_percent=round(fraction * 100.0, 2),
+        train_samples=row.train_samples,
+        test_samples=row.test_samples,
+        identities=row.identities,
+        train_accuracy=row.train_accuracy,
+        test_accuracy=row.test_accuracy,
+        fit_ms=row.fit_ms,
+        train_predict_ms_per_sample=train_predict_ms_per_sample,
+        test_predict_ms_per_sample=row.predict_ms_per_sample,
+        kernel_evaluations=kernel_evaluations,
+        artifact=str(artifact),
+    )
+
+
+def accuracy_row_from_curve(row: LearningCurveRow) -> AccuracyRow:
+    return AccuracyRow(
+        model=row.model,
+        train_accuracy=row.train_accuracy,
+        test_accuracy=row.test_accuracy,
+        train_samples=row.train_samples,
+        test_samples=row.test_samples,
+        identities=row.identities,
+        fit_ms=row.fit_ms,
+        predict_ms_per_sample=row.test_predict_ms_per_sample,
+    )
+
+
+def run_learning_curve(
+    *,
+    args: argparse.Namespace,
+    train_samples: list[ExtractedSample],
+    test_samples: list[ExtractedSample],
+    train_failures: list[dict[str, str]],
+    test_failures: list[dict[str, str]],
+    train_x: np.ndarray,
+    train_y: np.ndarray,
+    test_x: np.ndarray,
+    test_y: np.ndarray,
+    split_stats: SplitStats,
+    started_all: float,
+    qft_centroids_path: Path,
+    qsvm_path: Path,
+    qrng_tokens_path: Path,
+    accuracy_csv_path: Path,
+    report_path: Path,
+    manifest_path: Path,
+) -> int:
+    try:
+        fractions = parse_learning_curve_fractions(args.learning_curve_fractions)
+    except ValueError as exc:
+        print(json.dumps({"status": "blocked", "reason": str(exc)}, indent=2), file=sys.stderr)
+        return 2
+
+    curve_dir = args.out_dir / "learning_curve"
+    curve_dir.mkdir(parents=True, exist_ok=True)
+    curve_csv_path = args.out_dir / "ubiris_v2_learning_curve.csv"
+    curve_report_path = args.out_dir / "ubiris_v2_learning_curve.json"
+    rows: list[LearningCurveRow] = []
+    full_fraction_rows: list[LearningCurveRow] = []
+
+    estimated_qsvm_calls = 0
+    if not args.skip_qsvm:
+        for fraction in fractions:
+            indices = select_learning_curve_indices(train_y, fraction, args.seed)
+            estimated_qsvm_calls += estimate_qsvm_kernel_evaluations(len(indices), len(test_x))
+    log(
+        f"Learning-curve mode enabled: fractions={','.join(str(fraction) for fraction in fractions)} "
+        f"test_samples={len(test_x)} estimated_qsvm_kernel_calls={estimated_qsvm_calls}"
+    )
+
+    def flush_outputs() -> None:
+        write_dataclass_csv(curve_csv_path, rows)
+        report = {
+            "benchmark_note": "UBIRIS.v2 train-size learning curve using IndraNet QFT, QSVM, and QRNG code paths.",
+            "elapsed_ms": (time.perf_counter() - started_all) * 1000.0,
+            "split_stats": asdict(split_stats),
+            "learning_curve_fractions": fractions,
+            "extracted": {
+                "train_samples": len(train_samples),
+                "test_samples": len(test_samples),
+                "train_extraction_ms_mean": mean(sample.latency_ms for sample in train_samples),
+                "test_extraction_ms_mean": mean(sample.latency_ms for sample in test_samples),
+                "train_failure_count": len(train_failures),
+                "test_failure_count": len(test_failures),
+                "train_failures": train_failures[:50],
+                "test_failures": test_failures[:50],
+            },
+            "learning_curve": [asdict(row) for row in rows],
+            "artifacts": {
+                "learning_curve_csv": str(curve_csv_path),
+                "learning_curve_json": str(curve_report_path),
+                "learning_curve_artifact_dir": str(curve_dir),
+                "full_accuracy_csv": str(accuracy_csv_path),
+                "full_report_json": str(report_path),
+            },
+        }
+        curve_report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    for curve_index, fraction in enumerate(fractions, start=1):
+        tag = learning_curve_tag(fraction)
+        indices = select_learning_curve_indices(train_y, fraction, args.seed + curve_index)
+        subset_x = train_x[indices]
+        subset_y = train_y[indices]
+        identities = len(set(subset_y.tolist()))
+        log(
+            f"Learning curve {tag}: train_samples={len(subset_x)}/{len(train_x)} "
+            f"identities={identities} test_samples={len(test_x)}"
+        )
+
+        qft_artifact = curve_dir / f"qft_centroids_{tag}.npz"
+        log(f"Learning curve {tag}: training QFT centroid model")
+        qft_labels, qft_centroids = train_qft_centroids(subset_x, subset_y)
+        np.savez_compressed(qft_artifact, labels=qft_labels, centroids=qft_centroids)
+        if fraction >= 1.0:
+            np.savez_compressed(qft_centroids_path, labels=qft_labels, centroids=qft_centroids)
+        qft_train_started = time.perf_counter()
+        qft_train_predictions = qft_centroid_predict(qft_labels, qft_centroids, subset_x)
+        qft_train_predict_ms = ((time.perf_counter() - qft_train_started) * 1000.0) / max(1, len(subset_x))
+        qft_test_started = time.perf_counter()
+        qft_test_predictions = qft_centroid_predict(qft_labels, qft_centroids, test_x)
+        qft_test_predict_ms = ((time.perf_counter() - qft_test_started) * 1000.0) / max(1, len(test_x))
+        qft_row = AccuracyRow(
+            model="QFT centroid cosine",
+            train_accuracy=accuracy(qft_train_predictions, subset_y),
+            test_accuracy=accuracy(qft_test_predictions, test_y),
+            train_samples=len(subset_x),
+            test_samples=len(test_x),
+            identities=identities,
+            fit_ms=0.0,
+            predict_ms_per_sample=qft_test_predict_ms,
+        )
+        qft_curve_row = curve_row_from_accuracy(
+            qft_row,
+            fraction=fraction,
+            train_predict_ms_per_sample=qft_train_predict_ms,
+            kernel_evaluations=0,
+            artifact=qft_artifact,
+        )
+        rows.append(qft_curve_row)
+        if fraction >= 1.0:
+            full_fraction_rows.append(qft_curve_row)
+
+        qrng_artifact = curve_dir / f"qrng_tokens_{tag}.json"
+        log(f"Learning curve {tag}: enrolling QRNG token templates")
+        binder = BiometricTokenBinder(QuantumRNG(n_qubits=max(4, args.n_qubits)), args.token_tolerance_bits)
+        qrng_started = time.perf_counter()
+        tokens_by_label = train_qrng_tokens(binder, subset_x, subset_y, progress_every=args.progress_every)
+        qrng_train_ms = (time.perf_counter() - qrng_started) * 1000.0
+        qrng_artifact.write_text(json.dumps(tokens_by_label, indent=2, sort_keys=True), encoding="utf-8")
+        if fraction >= 1.0:
+            qrng_tokens_path.write_text(json.dumps(tokens_by_label, indent=2, sort_keys=True), encoding="utf-8")
+        qrng_train_started = time.perf_counter()
+        qrng_train_predictions = qrng_token_predict_from_enrollment(binder, tokens_by_label, subset_x)
+        qrng_train_predict_ms = ((time.perf_counter() - qrng_train_started) * 1000.0) / max(1, len(subset_x))
+        qrng_test_started = time.perf_counter()
+        qrng_test_predictions = qrng_token_predict_from_enrollment(binder, tokens_by_label, test_x)
+        qrng_test_predict_ms = ((time.perf_counter() - qrng_test_started) * 1000.0) / max(1, len(test_x))
+        qrng_row = AccuracyRow(
+            model="QRNG token proof",
+            train_accuracy=accuracy(qrng_train_predictions, subset_y),
+            test_accuracy=accuracy(qrng_test_predictions, test_y),
+            train_samples=len(subset_x),
+            test_samples=len(test_x),
+            identities=identities,
+            fit_ms=qrng_train_ms,
+            predict_ms_per_sample=qrng_test_predict_ms,
+        )
+        qrng_curve_row = curve_row_from_accuracy(
+            qrng_row,
+            fraction=fraction,
+            train_predict_ms_per_sample=qrng_train_predict_ms,
+            kernel_evaluations=0,
+            artifact=qrng_artifact,
+        )
+        rows.append(qrng_curve_row)
+        if fraction >= 1.0:
+            full_fraction_rows.append(qrng_curve_row)
+
+        if not args.skip_qsvm:
+            qsvm_artifact = curve_dir / f"qsvm_{tag}.pkl"
+            kernel_phases = estimate_qsvm_phase_kernel_evaluations(len(subset_x), len(test_x))
+            log(
+                f"Learning curve {tag}: training QSVM n_qubits={args.n_qubits} reps={args.qsvm_reps} "
+                f"kernel_calls={sum(kernel_phases.values())} phases={kernel_phases}"
+            )
+            qsvm = QuantumSVMClassifier(n_qubits=args.n_qubits, C=args.qsvm_c, reps=args.qsvm_reps)
+            qsvm_started = time.perf_counter()
+            qsvm.fit(
+                subset_x,
+                subset_y,
+                progress_callback=make_qsvm_progress_logger(f"QSVM {tag}"),
+                progress_every=args.qsvm_progress_every,
+            )
+            qsvm_fit_ms = (time.perf_counter() - qsvm_started) * 1000.0
+            qsvm.save(qsvm_artifact)
+            if fraction >= 1.0:
+                qsvm.save(qsvm_path)
+            qsvm_train_started = time.perf_counter()
+            qsvm_train_predictions = qsvm.predict(
+                subset_x,
+                progress_callback=make_qsvm_progress_logger(f"QSVM {tag}"),
+                progress_every=args.qsvm_progress_every,
+                progress_label="train_predict_kernel",
+            )["identity"]
+            qsvm_train_predict_ms = ((time.perf_counter() - qsvm_train_started) * 1000.0) / max(1, len(subset_x))
+            qsvm_test_started = time.perf_counter()
+            qsvm_test_predictions = qsvm.predict(
+                test_x,
+                progress_callback=make_qsvm_progress_logger(f"QSVM {tag}"),
+                progress_every=args.qsvm_progress_every,
+                progress_label="test_predict_kernel",
+            )["identity"]
+            qsvm_test_predict_ms = ((time.perf_counter() - qsvm_test_started) * 1000.0) / max(1, len(test_x))
+            qsvm_row = AccuracyRow(
+                model="QSVM",
+                train_accuracy=accuracy(qsvm_train_predictions, subset_y),
+                test_accuracy=accuracy(qsvm_test_predictions, test_y),
+                train_samples=len(subset_x),
+                test_samples=len(test_x),
+                identities=identities,
+                fit_ms=qsvm_fit_ms,
+                predict_ms_per_sample=qsvm_test_predict_ms,
+            )
+            qsvm_curve_row = curve_row_from_accuracy(
+                qsvm_row,
+                fraction=fraction,
+                train_predict_ms_per_sample=qsvm_train_predict_ms,
+                kernel_evaluations=sum(kernel_phases.values()),
+                artifact=qsvm_artifact,
+            )
+            rows.append(qsvm_curve_row)
+            if fraction >= 1.0:
+                full_fraction_rows.insert(0, qsvm_curve_row)
+
+        flush_outputs()
+        log(f"Learning curve {tag}: wrote {curve_csv_path} and {curve_report_path}")
+
+    artifacts = TrainedArtifacts(
+        qft_centroids_npz=str(qft_centroids_path),
+        qsvm_model_pkl=str(qsvm_path) if not args.skip_qsvm else "",
+        qrng_tokens_json=str(qrng_tokens_path),
+        feature_cache_npz=str(args.out_dir / "ubiris_v2_qft_features.npz"),
+        manifest_json=str(manifest_path),
+    )
+    manifest = {
+        "dataset_root": str(args.dataset_root),
+        "config": vars(args),
+        "split_stats": asdict(split_stats),
+        "learning_curve": {
+            "enabled": True,
+            "fractions": fractions,
+            "csv": str(curve_csv_path),
+            "json": str(curve_report_path),
+            "artifact_dir": str(curve_dir),
+        },
+        "artifacts": asdict(artifacts),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    if full_fraction_rows:
+        write_accuracy_csv(accuracy_csv_path, [accuracy_row_from_curve(row) for row in full_fraction_rows])
+    report_path.write_text(curve_report_path.read_text(encoding="utf-8"), encoding="utf-8")
+    log("Learning-curve benchmark complete")
+    print(json.dumps([asdict(row) for row in rows], indent=2))
+    print(f"Wrote {curve_csv_path}")
+    print(f"Wrote {curve_report_path}")
+    return 0
 
 
 def main() -> int:
@@ -295,8 +677,16 @@ def main() -> int:
     parser.add_argument("--qsvm-c", type=float, default=1.0)
     parser.add_argument("--token-tolerance-bits", type=int, default=4)
     parser.add_argument("--progress-every", type=int, default=100)
+    parser.add_argument(
+        "--qsvm-progress-every",
+        type=int,
+        default=50000,
+        help="Print QSVM kernel progress every N kernel evaluations; set 0 to disable progress lines",
+    )
     parser.add_argument("--reuse-feature-cache", action="store_true")
     parser.add_argument("--skip-qsvm", action="store_true", help="Train QFT/QRNG only; useful for very large first passes")
+    parser.add_argument("--learning-curve", action="store_true", help="Benchmark train-size curve instead of only one full fit")
+    parser.add_argument("--learning-curve-fractions", default="0.10,0.25,0.50,0.75,1.0")
     args = parser.parse_args()
 
     started_all = time.perf_counter()
@@ -380,6 +770,27 @@ def main() -> int:
 
     train_x, train_y = arrays(train_samples)
     test_x, test_y = arrays(test_samples)
+    if args.learning_curve:
+        return run_learning_curve(
+            args=args,
+            train_samples=train_samples,
+            test_samples=test_samples,
+            train_failures=train_failures,
+            test_failures=test_failures,
+            train_x=train_x,
+            train_y=train_y,
+            test_x=test_x,
+            test_y=test_y,
+            split_stats=split_stats,
+            started_all=started_all,
+            qft_centroids_path=qft_centroids_path,
+            qsvm_path=qsvm_path,
+            qrng_tokens_path=qrng_tokens_path,
+            accuracy_csv_path=accuracy_csv_path,
+            report_path=report_path,
+            manifest_path=manifest_path,
+        )
+
     identities = len(set(train_y.tolist()))
     rows: list[AccuracyRow] = []
 
@@ -436,13 +847,28 @@ def main() -> int:
         )
         qsvm = QuantumSVMClassifier(n_qubits=args.n_qubits, C=args.qsvm_c, reps=args.qsvm_reps)
         qsvm_started = time.perf_counter()
-        qsvm.fit(train_x, train_y)
+        qsvm.fit(
+            train_x,
+            train_y,
+            progress_callback=make_qsvm_progress_logger("QSVM full"),
+            progress_every=args.qsvm_progress_every,
+        )
         qsvm_fit_ms = (time.perf_counter() - qsvm_started) * 1000.0
         log(f"QSVM fit complete in {qsvm_fit_ms / 1000.0:.1f}s; saving model to {qsvm_path}")
         qsvm.save(qsvm_path)
-        qsvm_train_predictions = qsvm.predict(train_x)["identity"]
+        qsvm_train_predictions = qsvm.predict(
+            train_x,
+            progress_callback=make_qsvm_progress_logger("QSVM full"),
+            progress_every=args.qsvm_progress_every,
+            progress_label="train_predict_kernel",
+        )["identity"]
         qsvm_started = time.perf_counter()
-        qsvm_test_predictions = qsvm.predict(test_x)["identity"]
+        qsvm_test_predictions = qsvm.predict(
+            test_x,
+            progress_callback=make_qsvm_progress_logger("QSVM full"),
+            progress_every=args.qsvm_progress_every,
+            progress_label="test_predict_kernel",
+        )["identity"]
         qsvm_predict_ms = ((time.perf_counter() - qsvm_started) * 1000.0) / max(1, len(test_x))
         rows.insert(
             0,
@@ -480,6 +906,9 @@ def main() -> int:
             "qsvm_reps": args.qsvm_reps,
             "qsvm_c": args.qsvm_c,
             "token_tolerance_bits": args.token_tolerance_bits,
+            "qsvm_progress_every": args.qsvm_progress_every,
+            "learning_curve": args.learning_curve,
+            "learning_curve_fractions": args.learning_curve_fractions,
         },
         "split_stats": asdict(split_stats),
         "artifacts": asdict(artifacts),
