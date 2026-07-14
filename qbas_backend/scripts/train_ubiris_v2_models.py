@@ -50,6 +50,9 @@ from qbas_backend.quantum.qsvm import QuantumSVMClassifier  # noqa: E402
 from qbas_backend.services.pipeline import IrisFeaturePipeline  # noqa: E402
 
 
+FEATURE_SCHEMA_VERSION = "qft_probs_z_zz_multi_projection_plus_texture_v1"
+
+
 @dataclass(frozen=True)
 class SplitStats:
     total_images: int
@@ -239,6 +242,7 @@ def save_feature_cache(path: Path, train_samples: list[ExtractedSample], test_sa
     test_x, test_y = arrays(test_samples)
     np.savez_compressed(
         path,
+        schema_version=np.asarray([FEATURE_SCHEMA_VERSION], dtype=object),
         train_features=train_x,
         train_labels=train_y,
         train_paths=np.asarray([sample.path for sample in train_samples], dtype=object),
@@ -252,6 +256,13 @@ def save_feature_cache(path: Path, train_samples: list[ExtractedSample], test_sa
 
 def load_feature_cache(path: Path) -> tuple[list[ExtractedSample], list[ExtractedSample]]:
     data = np.load(path, allow_pickle=True)
+    if "schema_version" not in data:
+        raise ValueError("cache predates feature schema tracking")
+    schema_version = str(np.asarray(data["schema_version"], dtype=object).reshape(-1)[0])
+    if schema_version != FEATURE_SCHEMA_VERSION:
+        raise ValueError(
+            f"cache schema {schema_version!r} does not match current schema {FEATURE_SCHEMA_VERSION!r}"
+        )
     train_samples = [
         ExtractedSample(path=str(path_value), identity=str(label), features=features, latency_ms=float(latency))
         for path_value, label, features, latency in zip(
@@ -733,12 +744,19 @@ def main() -> int:
         f"train={split_stats.train_samples} test={split_stats.test_samples} strategy={split_stats.split_strategy}"
     )
 
+    loaded_cache = False
     if args.reuse_feature_cache and feature_cache_path.exists():
         log(f"Loading cached QFT features from {feature_cache_path}")
-        train_samples, test_samples = load_feature_cache(feature_cache_path)
-        train_failures: list[dict[str, str]] = []
-        test_failures: list[dict[str, str]] = []
-    else:
+        try:
+            train_samples, test_samples = load_feature_cache(feature_cache_path)
+        except ValueError as exc:
+            log(f"Ignoring stale feature cache: {exc}; regenerating features")
+        else:
+            train_failures: list[dict[str, str]] = []
+            test_failures: list[dict[str, str]] = []
+            loaded_cache = True
+
+    if not loaded_cache:
         log(f"Initializing QFT extractor: n_qubits={args.n_qubits}")
         extractor = QFTIrisExtractor(n_qubits=args.n_qubits)
         extractor.warmup()

@@ -25,7 +25,7 @@ def refresh_classifier(app: "FastAPI") -> QuantumSVMClassifier:
     settings = app.state.settings
     X, y = load_training_set(app)
     classifier = QuantumSVMClassifier(
-        n_qubits=int(X.shape[1]) if len(X) > 0 else settings.n_qubits,
+        n_qubits=settings.n_qubits,
         C=settings.qsvm_c,
         device=settings.quantum_device,
         reps=settings.qsvm_reps,

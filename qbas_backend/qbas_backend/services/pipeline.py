@@ -3,7 +3,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from qbas_backend.classical.preprocessing import compress_to_amplitudes, preprocess_iris
+from qbas_backend.classical.preprocessing import (
+    combine_qft_and_texture_features,
+    compress_to_amplitudes,
+    extract_texture_features,
+    preprocess_iris,
+)
 from qbas_backend.quantum.qft_iris import QFTIrisExtractor
 
 
@@ -22,6 +27,8 @@ class IrisFeaturePipeline:
         started = time.perf_counter()
         band, _geometry = preprocess_iris(contents)
         amplitudes = compress_to_amplitudes(band, self.extractor.amplitude_dim)
-        features = self.extractor.extract(amplitudes)
+        qft_features = self.extractor.extract(amplitudes)
+        texture_features = extract_texture_features(band)
+        features = combine_qft_and_texture_features(qft_features, texture_features)
         elapsed = (time.perf_counter() - started) * 1000.0
         return ExtractionResult(features=features, amplitudes=amplitudes, latency_ms=elapsed)
